@@ -1,0 +1,601 @@
+<?php
+
+/**
+ * @file
+ * This vimeo field module file.
+ *
+ * Allow admin to create new vimeo type field for any content type.
+ * play Vimeo Hosted video at front end.
+ * This file use Vimeo API to load video list and player from vimeo.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function vimeo_field_menu() {
+  $items['vimeo/oauth'] = array(
+    'title' => 'Vimeo OAuth',
+    'access callback' => TRUE,
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('vimeo_field_oauth_callback'),
+    'type' => MENU_CALLBACK,
+    'file' => 'vimeo.admin.inc',
+  );
+
+  $items['admin/config/services/vimeo/settings'] = array(
+    'title' => 'Vimeo Settings',
+    'description' => 'Vimeo settings.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('vimeo_field_admin_form'),
+    'access arguments' => array('administer site configuration'),
+    'file' => 'vimeo.admin.inc',
+    'type' => MENU_NORMAL_ITEM,
+  );
+  $items['vimeo/video'] = array(
+    'access callback' => TRUE,
+    'page callback' => 'vimeo_field_get_all_video_options',
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_field_info().
+ */
+function vimeo_field_field_info() {
+  return array(
+    'vimeo' => array(
+      'label' => t('Vimeo'),
+      'description' => t('Store an Vimeo video ID.'),
+      'default_widget' => 'vimeo_embed_code',
+      'default_formatter' => 'vimeo_default',
+    ),
+  );
+}
+
+/**
+ * Implements FAPI hook_element_info().
+ *
+ * Any FAPI callbacks needed for individual widgets can be declared here,
+ * and the element will be passed to those callbacks for processing.
+ *
+ * Drupal will automatically theme the element using a theme with
+ * the same name as the hook_elements key.
+ */
+function vimeo_field_element_info() {
+  return array(
+    'vimeo_video_list' => array(
+      '#input' => TRUE,
+      '#columns' => array('value', 'status', 'length'),
+      '#delta' => 0,
+      '#process' => array('vimeo_field_video_list_process'),
+    ),
+    'vimeo_video_trailer_list' => array(
+      '#input' => TRUE,
+      '#columns' => array('value', 'status', 'length'),
+      '#delta' => 0,
+      '#process' => array('vimeo_field_video_trailer_list_process'),
+    ),
+    'vimeo_video_interview_list' => array(
+      '#input' => TRUE,
+      '#columns' => array('value', 'status', 'length'),
+      '#delta' => 0,
+      '#process' => array('vimeo_field_video_interview_list_process'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_insert().
+ */
+function vimeo_field_field_insert($entity_type, $entity, $field, $instance, $langcode, &$items) {
+  vimeo_field_field_sanitize($entity_type, $entity, $field, $instance, $langcode, $items);
+}
+
+/**
+ * Implements hook_field_update().
+ */
+function vimeo_field_field_update($entity_type, $entity, $field, $instance, $langcode, &$items) {
+  vimeo_field_field_sanitize($entity_type, $entity, $field, $instance, $langcode, $items);
+}
+
+/**
+ * Implements hook_field_presave().
+ */
+function vimeo_field_field_presave($entity_type, $entity, $field, $instance, $langcode, &$items) {
+  vimeo_field_field_sanitize($entity_type, $entity, $field, $instance, $langcode, $items);
+}
+
+/**
+ * Generic helper function for use in update, presave and insert hooks.
+ */
+function vimeo_field_field_sanitize($entity_type, $entity, $field, $instance, $langcode, &$items) {
+  foreach ($items as $delta => $item) {
+    /* We might not have a length yet from Vimeo depending on the processing
+    of the content. If Vimeo doesn't have a length, unset the value so
+    Field API will save NULL to the database.
+     */
+    if (empty($items[$delta]['length'])) {
+      // vimeo_api_video_property($item['value'], 'length');.
+      $length = 100;
+      if ($length === FALSE) {
+        unset($items[$delta]['length']);
+      }
+      else {
+        $items[$delta]['length'] = $length;
+      }
+    }
+    /* watchdog('vimeo_field','video title:- '.$items[$delta]['value']);
+    if (!empty($items[$delta]['value'])) {
+    $video_id = get_id_by_title($items[$delta]['value']);
+    if ($video_id === FALSE) {
+    unset($items[$delta]['value']);
+    }
+    else { watchdog('vimeo_field','video id:- '.$video_id);
+    $items[$delta]['value'] = $video_id;
+    }
+    } */
+
+    /* empty($items[$delta]['status']) ? vimeo_api_video_property(
+    $item['value'], 'status') : $items[$delta]['status']; */
+    $items[$delta]['status'] = TRUE;
+
+    if (isset($item['thumbnail_list'])) {
+      if ($item['thumbnail_list'] == 'current') {
+        continue;
+      }
+      $thumbnails = vimeo_api_fetch_thumbnails($item['value']);
+      $thumbnail_url = $thumbnails[$item['thumbnail_list']];
+      ini_set('default_socket_timeout', 360);
+      $thumbnail_directory = variable_get('vimeo_field_thumbnail_path', '');
+      $data = file_get_contents($thumbnail_url->url);
+      $file_uri = file_unmanaged_save_data($data, file_build_uri($thumbnail_directory . '/' . $item['value'] . '.jpg'), FILE_EXISTS_REPLACE);
+
+      // Send the updated image to vimeo.
+      // vimeo_api_upload_promo_image($item['value'], $file_uri);
+      // Flush image styles.
+      if (isset($file_uri)) {
+        image_path_flush($file_uri);
+      }
+      else {
+        drupal_set_message(t('There was an error saving the new thumbnail. Please try again later'), 'warning');
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_field_widget_info().
+ */
+function vimeo_field_field_widget_info() {
+  return array(
+    'vimeo_video_list' => array(
+      'label' => t('Vimeo video list'),
+      'field types' => array('vimeo'),
+      'behaviors' => array(
+        'multiple values' => FIELD_BEHAVIOR_DEFAULT,
+        'default value' => FIELD_BEHAVIOR_DEFAULT,
+      ),
+    ),
+    'vimeo_trailer_list' => array(
+      'label' => t('Vimeo video Trailer list'),
+      'field types' => array('vimeo'),
+      'behaviors' => array(
+        'multiple values' => FIELD_BEHAVIOR_DEFAULT,
+        'default value' => FIELD_BEHAVIOR_DEFAULT,
+      ),
+    ),
+    'vimeo_interview_list' => array(
+      'label' => t('Vimeo film maker Interview video list'),
+      'field types' => array('vimeo'),
+      'behaviors' => array(
+        'multiple values' => FIELD_BEHAVIOR_DEFAULT,
+        'default value' => FIELD_BEHAVIOR_DEFAULT,
+      ),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ */
+function vimeo_field_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $element = array();
+  $output = '';
+  // Copy the value key to 'embed_code' so we can pass $item as-is into our
+  // theme functions.
+  foreach ($items as $key => $item) {
+    $items[$key]['embed_code'] = $item['value'];
+  }
+
+  switch ($display['type']) {
+    case 'vimeo_default':
+      foreach ($items as $delta => $item) {
+        if ($item['value']) {
+          $params = array(
+            'playerId' => $field['field_name'] . '_' . $delta . '_vimeo_player',
+          );
+        }
+        $output .= vimeo_field_player($item['value'], $params);
+        $element[$delta] = array('#markup' => $output);
+      }
+      // $element[$delta] = array('#markup' => $output);.
+      break;
+
+    case 'vimeo_thumbnail':
+    case 'vimeo_video_length':
+    case 'vimeo_video_status':
+      foreach ($items as $delta => $item) {
+        $output .= theme($display['type'], $item);
+        $element[$delta] = array('#markup' => $output);
+      }
+      // $element[$delta] = array('#markup' => $output);.
+      break;
+
+    default:
+      $formatter = explode('|', $display['type']);
+      /* if ($formatter[1]) {
+      $preset = $formatter[0];
+      } */
+      $output .= '<!-- Appropriate formatter not found. -->';
+      $element[] = array('#markup' => $output);
+  }
+
+  return $element;
+}
+
+/**
+ * A public API function used to output an Vimeo player.
+ *
+ * This function should be used to output a video player instead of calling
+ * theme('Vimeo_field_player') to ensure that js file and $_GET parameters are
+ * correct.
+ *
+ * @param string $video_id
+ *   Id of the video to display.
+ * @param array $params
+ *   An associative array of parameters that will be passed as $_GET variables
+ *   to the Vimeo js file.
+ *
+ * @return srting
+ *   An HTML <script> tag pointing to the vimeo player.js file which will
+ *   display the video player using vimeo's API.
+ */
+function vimeo_field_player($video_id, $params) {
+  static $container_ids = array();
+
+  // Ensure that each container ID is unique across requests.
+  $container_id = 'vimeo-container-' . REQUEST_TIME;
+  // Ensure that each container ID is unique for this request.
+  if (in_array($container_id, $container_ids)) {
+    $container_id = $container_id . '-' . count($container_ids);
+  }
+  $container_ids[] = $container_id;
+
+  // Set up some default parameters.
+  $params = array();
+
+  // Height and width are optional with V3 player.
+  if ($height = variable_get('vimeo_field_video_height', 300)) {
+    $params['height'] = (int) $height;
+  }
+  if ($width = variable_get('vimeo_field_video_width', 400)) {
+    $params['width'] = (int) $width;
+  }
+
+  // Set remaining parameters being used.
+  $params += array(
+    'video_id' => $video_id,
+    'playerId' => 'vimeo_player',
+    'playerContainerId' => $container_id,
+  );
+
+  return theme('vimeo_player', array(
+    'video_id' => $video_id,
+    'container_id' => $container_id,
+    'params' => $params,
+  ));
+}
+
+/**
+ * Theme function to output an vimeo video player.
+ */
+function theme_vimeo_player($variables) {
+
+  $video_id = $variables['video_id'];
+  $container_id = $variables['container_id'];
+  $params = $variables['params'];
+
+  $output = '<div id="' . $container_id . '">
+  <object width="' . $params['height'] . '" height="' . $params['width'] . '">  <param name="allowfullscreen" value="true" />  <param name="allowscriptaccess" value="always" />  <param name="movie" value="http://vimeo.com/moogaloop.swf?clip_id=' . $video_id . '&server=vimeo.com&color=00adef&fullscreen=1" /><embed src="http://vimeo.com/moogaloop.swf?clip_id=' . $video_id . '&server=vimeo.com&color=00adef&fullscreen=1"
+        type="application/x-shockwave-flash" allowfullscreen="true" allowscriptaccess="always" width="' . $params['width'] . '" height="HEIGHT' . $params['height'] . '"></embed>
+</object></div>';
+
+  return $output;
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function vimeo_field_views_api() {
+  $return = array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'vimeo_field') . '/includes',
+  );
+  return $return;
+}
+
+/**
+ * Implements hook_field_widget_form().
+ */
+function vimeo_field_field_widget_form(&$form, &$form_state, $field, $instance, $langcode, $items, $delta, $element) {
+
+  $element += array(
+    '#title' => (empty($instance['label']) ? '' : $instance['label']),
+    '#type' => 'vimeo_video_list',
+    '#default_value' => !empty($items[$delta]) ? $items[$delta] : array(),
+  );
+  return $element;
+}
+
+/**
+ * Element #process function for the "vimeo_video_list" field.
+ */
+function vimeo_field_video_list_process($element, &$form_state, $form) {
+
+  $element['#theme'] = 'vimeo_video_id';
+  $element['#vimeo_api_available'] = TRUE;
+  $element['#vimeo_video_list'] = array();
+  $element['value'] = array(
+    // '#type' => 'textfield',.
+    '#type' => 'select',
+    '#title' => $element['#title'],
+    '#description' => $element['#description'],
+    '#default_value' => isset($element['#value']['value']) ? get_video_title($element['#value']['value']) : FALSE,
+    '#required' => $element['#required'],
+    '#options' => vimeo_field_get_all_video_list_options(),
+    // '#autocomplete_path' => 'vimeo/video',.
+    '#attributes' => array('class' => array('vimeo-embed-code-input')),
+    '#weight' => -10,
+  );
+  $element['status'] = array(
+    '#type' => 'hidden',
+    '#default_value' => isset($element['#vimeo_video_list']['status']) ? $element['#vimeo_video_list']['status'] : NULL,
+  );
+  $element['length'] = array(
+    '#type' => 'hidden',
+    '#default_value' => isset($element['#vimeo_video_list']['duration']) ? $element['#vimeo_video_list']['duration'] : NULL,
+  );
+  // Set #element_validate in a way that it will not wipe out other
+  // validation functions already set by other modules.
+  if (empty($element['#element_validate'])) {
+    $element['#element_validate'] = array();
+  }
+  return $element;
+}
+
+/**
+ * Prepare array for video option list and pass to the video list widget.
+ *
+ * @return array
+ *   An array of video with embed_code => name format embed_code is encoded
+ *   value from vimeo.
+ */
+function vimeo_field_get_all_video_list_options() {
+  require_once drupal_get_path('module', 'vimeo_field') . '/vimeo.api.inc';
+  if ($vimeo = vimeo_field_connect()) {
+    $videos = $vimeo->call('vimeo.videos.getUploaded');
+    $video = array('0' => 'Select');
+    foreach ($videos->videos->video as $value) {
+      $video[$value->id] = check_plain($value->title);
+    }
+    // $video = drupal_json_output($video);
+    return $video;
+  }
+  else {
+    return array();
+  }
+}
+
+/**
+ * Search all videos hosted on vimeo.
+ */
+function vimeo_field_get_all_video_options($key = '') {
+  require_once drupal_get_path('module', 'vimeo_field') . '/vimeo.api.inc';
+  if ($vimeo = vimeo_field_connect()) {
+    $videos = $vimeo->call('vimeo.videos.getUploaded');
+    watchdog('vimeo _field', $key);
+    foreach ($videos->videos->video as $value) {
+      $title = strtolower($value->title);
+      $key = strtolower($key);
+      if (strpos($title, $key) !== FALSE) {
+        $video[$value->id] = check_plain($value->title);
+      }
+      else {
+        watchdog('vimeo _field', strpos($value->title, $key));
+      }
+    }
+    $video = drupal_json_output($video);
+    return $video;
+  }
+  else {
+    return array();
+  }
+}
+
+/**
+ * Search video title by ID.
+ */
+function get_video_title($video_id) {
+  require_once drupal_get_path('module', 'vimeo_field') . '/vimeo.api.inc';
+  if ($vimeo = vimeo_field_connect()) {
+    $videos = $vimeo->call('vimeo.videos.getUploaded');
+    foreach ($videos->videos->video as $value) {
+      if ($video_id == $value->id) {
+        return $value->title;
+      }
+    }
+  }
+  else {
+    return FALSE;
+  }
+}
+
+/**
+ * Search video ID by video title.
+ */
+function get_id_by_title($title = '') {
+  if ($title != '') {
+    require_once drupal_get_path('module', 'vimeo_field') . '/vimeo.api.inc';
+    if ($vimeo = vimeo_field_connect()) {
+      $videos = $vimeo->call('vimeo.videos.getUploaded');
+      watchdog('vimeo_field', 'video_title:- @$title', array('!@$title', $title));
+      foreach ($videos->videos->video as $value) {
+        if ($title == $value->title) {
+          watchdog('vimeo_field', 'video_id:- @video_id', array('@video_id', $value->id));
+          return $value->id;
+        }
+      }
+    }
+    else {
+      return FALSE;
+    }
+  }
+  else {
+    return FALSE;
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function vimeo_field_theme() {
+  $themes = array(
+    'vimeo_player' => array(
+      'variables' => array(
+        'video_id' => NULL,
+        'container_id' => NULL,
+        'params' => NULL,
+      ),
+    ),
+    'vimeo_video_id' => array(
+      'render element' => 'element',
+    ),
+    'vimeo_embed_code_preview' => array(
+      'variables' => array('embed_code' => NULL, 'width' => 150),
+    ),
+    'vimeo_video_data' => array(
+      'variables' => array('data_type' => NULL, 'data' => NULL),
+    ),
+    'vimeo_video_length' => array(
+      'variables' => array('length' => NULL),
+    ),
+    'vimeo_video_status' => array(
+      'variables' => array('status' => NULL),
+    ),
+  );
+
+  foreach (image_styles() as $preset) {
+    $themes['vimeo_formatter_' . $preset['name'] . '|vimeo_imagestyle'] = array(
+      'function' => 'theme_vimeo_format',
+      'variables' => array('element' => NULL),
+    );
+    $themes['vimeo_formatter_' . $preset['name'] . '|vimeo_linked_imagestyle'] = array(
+      'function' => 'theme_vimeo_format',
+      'variables' => array('element' => NULL),
+    );
+    if (module_exists('colorbox')) {
+      $themes['vimeo_formatter_' . $preset['name'] . '.|vimeo_colorbox'] = array(
+        'function' => 'theme_vimeo_format',
+        'variables' => array('element' => NULL),
+      );
+    }
+  }
+
+  return $themes;
+}
+
+/**
+ * Theme the "vimeo_embed_code" data.
+ */
+function theme_vimeo_video_data($vars) {
+  // Expected output '<div class="vimeo-video-' . $vars['data_type'] . '">' .
+  // $vars['data'] . '</div>'.
+  return theme('vimeo_video_' . $vars['data_type'], array($vars['data']));
+}
+
+/**
+ * Theme the "vimeo_embed_code" element.
+ */
+function theme_vimeo_video_id($variables) {
+  $element = $variables['element'];
+  return drupal_render_children($element);
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function vimeo_field_field_formatter_info() {
+  $formatters = array(
+    'vimeo_default' => array(
+      'label' => t('Vimeo video'),
+      'field types' => array('vimeo'),
+    ),
+    'vimeo_video_length' => array(
+      'label' => t('vimeo video length'),
+      'field types' => array('vimeo'),
+    ),
+    'vimeo_video_status' => array(
+      'label' => t('vimeo video status'),
+      'field types' => array('vimeo'),
+    ),
+  );
+
+  return $formatters;
+}
+
+/**
+ * Theme a textfield as a Vimeo video.
+ */
+function theme_vimeo_formatter_vimeo_default($vars) {
+  $element = $vars['element'];
+  $output = '';
+  $item = $element;
+  foreach (element_children($element) as $delta) {
+    $item['#item'] = $element[$delta]['#item'];
+    if ($item['#item']['safe']) {
+      $params = array(
+        'playerId' => $item['#field_name'] . '_' . $delta . '_vimeo_player',
+      );
+      $output .= vimeo_player($item['#item']['safe'], $params);
+    }
+  }
+
+  return !empty($output) ? $output : 'no field';
+}
+
+/**
+ * Check and return if vimeo field is empty.
+ */
+function vimeo_field_field_is_empty($item, $field) {
+  if (empty($item['value']) && (string) $item['value'] !== '0') {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * Preprocess function for vimeo-sharedplayer-view.tpl.php.
+ */
+function template_preprocess_vimeo_field_sharedplayer_view(&$vars) {
+  $view = $vars['view'];
+  $results = $vars['result'] = $vars['rows'];
+
+  $vars['width'] = $vars['options']['width'];
+  $vars['height'] = $vars['options']['height'];
+  $vars['video_id'] = array();
+  foreach ($results as $row) {
+    $video = array_pop($view->field[$vars['options']['video_id_field']]->get_value($row));
+    $vars['video_id'][] = $video['value'];
+  }
+}

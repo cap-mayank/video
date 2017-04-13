@@ -1,0 +1,8 @@
+name = Vimeo Field
+package = Vimeo
+description = An Vimeo module to Integrate Vimeo hosted video in drupal. Allows display of videos from the <a href="http://www.vimeo.com">Vimeo</a> video service.
+
+core = 7.x
+configure = admin/config/services/vimeo/settings
+files[] = includes/vimeo_field_handler_field_length.inc
+files[] = includes/vimeo_field_style_plugin.inc

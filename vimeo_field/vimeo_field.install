@@ -1,0 +1,43 @@
+<?php
+
+/**
+ * @file
+ * Installation and update functions for the Vimeo module.
+ */
+
+/**
+ * Implements hook_field_schema().
+ */
+function vimeo_field_field_schema($field) {
+  if ($field['type'] == 'vimeo') {
+    $columns = array(
+      'value' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'index' => TRUE,
+      ),
+      'status' => array(
+        'type' => 'varchar',
+        'length' => 255,
+      ),
+      'length' => array(
+        'type' => 'int',
+        'size' => 'big',
+      ),
+    );
+  }
+
+  // Build our array of indexes for the field.
+  $indexes = array();
+  foreach ($columns as $key => $column) {
+    if (isset($column['index']) && $column['index'] == TRUE) {
+      $indexes[$key] = array($key);
+      unset($columns[$key]['index']);
+    }
+  }
+
+  return array(
+    'columns' => $columns,
+    'indexes' => $indexes,
+  );
+}
